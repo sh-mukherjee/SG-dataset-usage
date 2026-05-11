@@ -1,6 +1,6 @@
 # Singapore Open Data Usage Analytics Dashboard
 
-A professional, executive-level analytics dashboard built with Streamlit, Plotly, and Pandas to analyze dataset usage metrics from Singapore's open data portal.
+A professional, executive-level analytics dashboard built with Streamlit, Plotly, and Pandas to analyze [dataset usage metrics](https://data.gov.sg/datasets/d_a3ccf37872e0c9a0a3b343ee4b285369/view) from Singapore's open data portal.
 
 ## Features
 
