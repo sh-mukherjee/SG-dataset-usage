@@ -43,6 +43,14 @@ def load_data(file_path):
         }
         df = df.rename(columns=column_map)
         
+        # Handle Missing Categorical Data (Fixes the sorting TypeError)
+        categorical_cols = ['quarter', 'dataset_name', 'agency', 'format']
+        for col in categorical_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).replace(['nan', 'None', ''], 'Unknown')
+            else:
+                df[col] = 'Unknown'
+        
         # Ensure core numeric columns exist
         numeric_cols = ['page_views', 'downloads', 'api_queries', 'subscriptions']
         for col in numeric_cols:
@@ -56,7 +64,6 @@ def load_data(file_path):
         
         # Popularity Score: Weighted Index
         # 40% Downloads, 30% API, 20% Views, 10% Subscriptions
-        # Normalizing within groups for a fairer score
         df['popularity_score'] = (
             (df['downloads'] * 0.4) + 
             (df['api_queries'] * 0.3) + 
@@ -86,8 +93,12 @@ def main():
     # --- SIDEBAR FILTERS ---
     st.sidebar.title("🔍 Global Filters")
     
-    quarters = sorted(df_raw['quarter'].unique(), reverse=True)
-    selected_quarters = st.sidebar.multiselect("Select Quarters", quarters, default=quarters[:2])
+    # Safely get unique values for sorting
+    quarters = sorted([q for q in df_raw['quarter'].unique() if q != 'Unknown'], reverse=True)
+    if 'Unknown' in df_raw['quarter'].unique():
+        quarters.append('Unknown')
+        
+    selected_quarters = st.sidebar.multiselect("Select Quarters", quarters, default=quarters[:min(2, len(quarters))])
     
     agencies = sorted(df_raw['agency'].unique())
     selected_agencies = st.sidebar.multiselect("Select Agencies", agencies)
@@ -130,7 +141,6 @@ def main():
         # KPI Row
         kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         
-        # Calculate Delta (Current selection vs Total average for context)
         with kpi1:
             st.metric("Total Views", format_big_number(df['page_views'].sum()))
         with kpi2:
@@ -153,6 +163,9 @@ def main():
                                        key="trend_sel")
             
             trend_df = df_raw.groupby('quarter')[metric_to_plot].sum().reset_index()
+            # Ensure chronological order for trend if quarters are standardized
+            trend_df = trend_df[trend_df['quarter'] != 'Unknown'].sort_values('quarter')
+            
             fig_trend = px.line(trend_df, x='quarter', y=metric_to_plot, 
                                 markers=True, template="plotly_white",
                                 color_discrete_sequence=['#1f77b4'])
@@ -182,13 +195,17 @@ def main():
     with tab2:
         st.subheader("Agency Performance Heatmap")
         agency_pivot = df.groupby('agency')[['page_views', 'downloads', 'api_queries', 'subscriptions']].sum()
-        # Scale for visualization
-        agency_pivot_norm = (agency_pivot - agency_pivot.min()) / (agency_pivot.max() - agency_pivot.min())
         
-        fig_heat = px.imshow(agency_pivot_norm.head(20), 
-                            labels=dict(x="Metric", y="Agency", color="Relative Intensity"),
-                            color_continuous_scale="Viridis")
-        st.plotly_chart(fig_heat, use_container_width=True)
+        if not agency_pivot.empty:
+            # Scale for visualization
+            agency_pivot_norm = (agency_pivot - agency_pivot.min()) / (agency_pivot.max() - agency_pivot.min() + 1e-9)
+            
+            fig_heat = px.imshow(agency_pivot_norm.head(20), 
+                                labels=dict(x="Metric", y="Agency", color="Relative Intensity"),
+                                color_continuous_scale="Viridis")
+            st.plotly_chart(fig_heat, use_container_width=True)
+        else:
+            st.info("No agency data available for the current selection.")
 
         st.markdown("---")
         
@@ -205,13 +222,17 @@ def main():
         with col_s2:
             st.subheader("Pareto Analysis (Downloads)")
             pareto_df = df.groupby('dataset_name')['downloads'].sum().sort_values(ascending=False).reset_index()
-            pareto_df['cumulative_perc'] = 100 * pareto_df['downloads'].cumsum() / pareto_df['downloads'].sum()
-            
-            fig_pareto = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_pareto.add_trace(go.Bar(x=pareto_df['dataset_name'][:15], y=pareto_df['downloads'][:15], name="Downloads"), secondary_y=False)
-            fig_pareto.add_trace(go.Scatter(x=pareto_df['dataset_name'][:15], y=pareto_df['cumulative_perc'][:15], name="Cumulative %", line=dict(color='red')), secondary_y=True)
-            fig_pareto.update_layout(title="Top 15 Datasets Cumulative Impact", showlegend=False)
-            st.plotly_chart(fig_pareto, use_container_width=True)
+            total_dl = pareto_df['downloads'].sum()
+            if total_dl > 0:
+                pareto_df['cumulative_perc'] = 100 * pareto_df['downloads'].cumsum() / total_dl
+                
+                fig_pareto = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_pareto.add_trace(go.Bar(x=pareto_df['dataset_name'][:15], y=pareto_df['downloads'][:15], name="Downloads"), secondary_y=False)
+                fig_pareto.add_trace(go.Scatter(x=pareto_df['dataset_name'][:15], y=pareto_df['cumulative_perc'][:15], name="Cumulative %", line=dict(color='red')), secondary_y=True)
+                fig_pareto.update_layout(title="Top 15 Datasets Cumulative Impact", showlegend=False)
+                st.plotly_chart(fig_pareto, use_container_width=True)
+            else:
+                st.info("No download data for Pareto analysis.")
 
         st.subheader("Complete Dataset Metrics")
         st.dataframe(
@@ -240,29 +261,34 @@ def main():
 
         with m_col3:
             st.write("**Correlation Matrix**")
-            corr = df[['page_views', 'downloads', 'api_queries', 'subscriptions']].corr()
+            corr_cols = ['page_views', 'downloads', 'api_queries', 'subscriptions']
+            corr = df[corr_cols].corr()
             fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale="RdBu_r")
             fig_corr.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
             st.plotly_chart(fig_corr, use_container_width=True)
 
         st.subheader("Agency Content Flow")
         # Sankey Data preparation
-        sankey_data = df.groupby(['agency', 'format'])['downloads'].sum().reset_index().nlargest(20, 'downloads')
+        sankey_df = df.groupby(['agency', 'format'])['downloads'].sum().reset_index()
+        sankey_df = sankey_df[sankey_df['downloads'] > 0].nlargest(20, 'downloads')
         
-        # Map labels to indices
-        all_nodes = list(set(sankey_data['agency']) | set(sankey_data['format']))
-        node_map = {node: i for i, node in enumerate(all_nodes)}
-        
-        fig_sankey = go.Figure(data=[go.Sankey(
-            node = dict(pad = 15, thickness = 20, line = dict(color = "black", width = 0.5), label = all_nodes),
-            link = dict(
-                source = [node_map[a] for a in sankey_data['agency']],
-                target = [node_map[f] for f in sankey_data['format']],
-                value = sankey_data['downloads']
-            )
-        )])
-        fig_sankey.update_layout(title_text="Volume Flow: Agency → Format", font_size=10)
-        st.plotly_chart(fig_sankey, use_container_width=True)
+        if not sankey_df.empty:
+            # Map labels to indices
+            all_nodes = list(set(sankey_df['agency']) | set(sankey_df['format']))
+            node_map = {node: i for i, node in enumerate(all_nodes)}
+            
+            fig_sankey = go.Figure(data=[go.Sankey(
+                node = dict(pad = 15, thickness = 20, line = dict(color = "black", width = 0.5), label = all_nodes),
+                link = dict(
+                    source = [node_map[a] for a in sankey_df['agency']],
+                    target = [node_map[f] for f in sankey_df['format']],
+                    value = sankey_df['downloads']
+                )
+            )])
+            fig_sankey.update_layout(title_text="Volume Flow: Agency → Format", font_size=10)
+            st.plotly_chart(fig_sankey, use_container_width=True)
+        else:
+            st.info("No usage volume to display flow.")
 
 if __name__ == "__main__":
     main()
