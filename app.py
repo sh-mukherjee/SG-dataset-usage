@@ -43,11 +43,12 @@ def load_data(file_path):
         }
         df = df.rename(columns=column_map)
         
-        # Handle Missing Categorical Data (Fixes the sorting TypeError)
+        # Handle Missing Categorical Data
         categorical_cols = ['quarter', 'dataset_name', 'agency', 'format']
         for col in categorical_cols:
             if col in df.columns:
-                df[col] = df[col].astype(str).replace(['nan', 'None', ''], 'Unknown')
+                # Ensure all are strings and replace nan-like values
+                df[col] = df[col].astype(str).replace(['nan', 'None', '', 'NaN'], 'Unknown')
             else:
                 df[col] = 'Unknown'
         
@@ -93,17 +94,22 @@ def main():
     # --- SIDEBAR FILTERS ---
     st.sidebar.title("🔍 Global Filters")
     
-    # Safely get unique values for sorting
-    quarters = sorted([q for q in df_raw['quarter'].unique() if q != 'Unknown'], reverse=True)
-    if 'Unknown' in df_raw['quarter'].unique():
-        quarters.append('Unknown')
-        
+    # Robust Sorting: Ensure all elements are strings before sorting to avoid TypeError
+    def get_safe_sorted(series, reverse=False):
+        unique_vals = [str(x) for x in series.unique()]
+        # Remove 'Unknown' from the list to sort it separately or handle it
+        main_list = sorted([x for x in unique_vals if x != 'Unknown'], reverse=reverse)
+        if 'Unknown' in unique_vals:
+            return main_list + ['Unknown']
+        return main_list
+
+    quarters = get_safe_sorted(df_raw['quarter'], reverse=True)
     selected_quarters = st.sidebar.multiselect("Select Quarters", quarters, default=quarters[:min(2, len(quarters))])
     
-    agencies = sorted(df_raw['agency'].unique())
+    agencies = get_safe_sorted(df_raw['agency'])
     selected_agencies = st.sidebar.multiselect("Select Agencies", agencies)
     
-    formats = sorted(df_raw['format'].unique())
+    formats = get_safe_sorted(df_raw['format'])
     selected_formats = st.sidebar.multiselect("Data Formats", formats)
     
     search_query = st.sidebar.text_input("Search Dataset Name", "")
@@ -163,7 +169,7 @@ def main():
                                        key="trend_sel")
             
             trend_df = df_raw.groupby('quarter')[metric_to_plot].sum().reset_index()
-            # Ensure chronological order for trend if quarters are standardized
+            # Ensure categorical type for string quarters to avoid string sorting issues in plot
             trend_df = trend_df[trend_df['quarter'] != 'Unknown'].sort_values('quarter')
             
             fig_trend = px.line(trend_df, x='quarter', y=metric_to_plot, 
